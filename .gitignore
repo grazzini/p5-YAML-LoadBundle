@@ -1,0 +1,6 @@
+.*.sw?
+local/*
+.perl-version
+.build/*
+cpanfile
+YAML-LoadBundle-*
