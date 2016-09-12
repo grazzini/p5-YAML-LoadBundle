@@ -12,9 +12,7 @@ use File::Find          qw( find );
 use Hash::Merge::Simple ();
 use Scalar::Util        qw( reftype refaddr );
 use Storable            qw( freeze );
-
-use YAML::XS qw(Load);
-#use Data::Visitor::Callback;
+use YAML::XS            qw(Load);
 
 our @EXPORT_OK = qw(
     load_yaml
@@ -141,62 +139,70 @@ my %SPECIAL = (
     -merge  => $deep_merge,
 );
 
-{
-    package YAML::LoadBundle::YAMLDV;
+# Note: This used to add a (heavy) dependency on Data::Visitor
+# to do these simple transformations. I *think* this is exactly 
+# equivalent to what it used to do.
 
-    use base qw(Data::Visitor::Callback);
-    # something in the way Data::Visitor tracks references it's already seen
-    # causes bizarre bugs -- it seems like memory addresses can get reused,
-    # meaning Data::Visitor grafts data into random places later down the
-    # tree.
-    # We don't have any circularity here, which is what D::V's refaddr cache
-    # exists to handle.
-    # For D::V 0.27, we could get the same result without subclassing like
-    # this:
-    #    seen => sub {
-    #        my ($v, $data, $result) = @_;
-    #        return $v->visit_no_rec_check($data);
-    #    },
-    sub visit { shift->visit_no_rec_check(@_) }
+sub _unravel {
+    my $data = shift;
+
+    if (ref $data) {
+        if (reftype $data eq 'HASH') {
+            return _unravel_hash($data);
+        }
+        elsif (reftype $data eq 'ARRAY') {
+            for my $elt (@$data) {
+                $elt = _unravel($elt);
+            }
+            return $data;
+        }
+    }
+
+    return $data;
 }
 
-sub _visit_hash {
-    my ($v, $data) = @_;
-    my $result = {%$data};
+# Note: this modifies the argument in place. But sometimes it returns 
+# a different reference, in order to replace itself in the enclosing
+# data structure. (If it encounters a "-flatten" entry.)
 
-    while (my @keys = grep { exists $result->{$_} } @SPECIAL) {
+sub _unravel_hash {
+    my $data = shift;
+    
+    while (my @keys = grep { exists $data->{$_} } @SPECIAL) {
         for my $key (@keys) {
             my $handler = $SPECIAL{$key};
-            my $val = delete $result->{$key};
+            my $val = delete $data->{$key};
             next unless $val;
-            %$result = $handler->($v->visit($val), $result);
+            %$data = $handler->(_unravel($val), $data);
         }
     }
 
-    if (keys %$result == 1) {
-        if (my $arrs = $result->{-flatten}) {
-            return [ map { @{ $v->visit($_) } } @$arrs ];
+    if (keys %$data == 1) {
+        if (my $arrs = $data->{-flatten}) {
+            _unravel($arrs);
+            return [ map @$_, @$arrs ];
         }
-        elsif (my $hrefs = $result->{-flattenhash}) {
-            return { map { %{ $v->visit($_) } } @$hrefs };
+        elsif (my $hrefs = $data->{-flattenhash}) {
+            _unravel($hrefs);
+            return { map %$_, @$hrefs };
         }
     }
 
-    return $result;
+    for my $elt (values %$data) {
+        $elt = _unravel($elt);
+    }
+
+    return $data;
 }
+
+
 
 {
 my %YAML_cache;
 sub _unravel_and_cache {
     my ($path, $perl, $cache_mtime, %params) = @_;
 
-    my $v = YAML::LoadBundle::YAMLDV->new(
-        hash => \&_visit_hash,
-    );
-    $perl = do {
-        local $DB::deep = 500 if defined $DB::deep;
-        $v->visit($perl);
-    };
+    _unravel($perl);
 
     # TODO: need a better way to explicitly not cache here
     if ($cache_mtime) {
