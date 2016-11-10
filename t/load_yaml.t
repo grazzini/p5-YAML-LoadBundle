@@ -13,6 +13,7 @@ my $yaml = <<'...';
 ---
 baroque:   gabrielli
 classical: haydn
+romantic:  false
 ...
 
 my ($fh, $file) = tmpnam();
