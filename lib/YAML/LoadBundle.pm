@@ -189,7 +189,7 @@ sub _unravel_hash {
     }
 
     for my $elt (values %$data) {
-        $elt = _unravel($elt);
+        $elt = _unravel($elt) if ref($elt);
     }
 
     return $data;
